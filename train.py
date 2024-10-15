@@ -1,13 +1,4 @@
 import argparse
-import pandas as pd
-import torch
-import torch.nn as nn
-import torch.optim as optim
-from torch.utils.data import Dataset, DataLoader, random_split
-from transformers import AutoTokenizer, AutoModel
-import numpy as np
-
-import argparse
 import polars as pl
 import torch
 import torch.nn as nn
@@ -22,6 +13,7 @@ class AntibodyAntigenDataset(Dataset):
         self.antibody_df = antibody_df
         self.antigen_df = antigen_df
         self.antigen_list = antigen_list
+        self.column_names = antibody_df.columns
 
         # Load the ESM-2 tokenizer
         self.tokenizer = AutoTokenizer.from_pretrained("facebook/esm2_t33_650M_UR50D")
@@ -35,17 +27,18 @@ class AntibodyAntigenDataset(Dataset):
 
     def __getitem__(self, idx):
         ab_row = self.antibody_df.row(idx)
+        ab_dict = dict(zip(self.column_names, ab_row))
 
         # Prepare antibody sequence
-        heavy_seq = ab_row['aaVDJRegion_h']
-        light_seq = ab_row['aaVDJRegion_l']
+        heavy_seq = ab_dict['aaVDJRegion_h']
+        light_seq = ab_dict['aaVDJRegion_l']
 
         # Add CDR separators
-        heavy_seq = self.add_cdr_separators(heavy_seq, ab_row, '_h')
-        light_seq = self.add_cdr_separators(light_seq, ab_row, '_l')
+        heavy_seq = self.add_cdr_separators(heavy_seq, ab_dict, '_h')
+        light_seq = self.add_cdr_separators(light_seq, ab_dict, '_l')
 
         # Combine heavy and light chains
-        ab_seq = heavy_seq + " " + light_seq
+        ab_seq = heavy_seq + ' <null_1> ' + light_seq
 
         # Tokenize antibody sequence
         ab_tokens = self.tokenizer(ab_seq, return_tensors="pt", padding=True, truncation=True)
@@ -57,20 +50,20 @@ class AntibodyAntigenDataset(Dataset):
             ag_seq = self.antigen_df.filter(pl.col('HA') == ag).select('seq').item()
             ag_tokens = self.tokenizer(ag_seq, return_tensors="pt", padding=True, truncation=True)
             ag_seqs.append(ag_tokens)
-            binding_scores.append(ab_row[ag] if ag in ab_row.keys() else 0)
+            binding_scores.append(ab_dict[ag] if ag in ab_dict else 0)
 
         # Prepare additional features
-        additional_features = self.get_additional_features(ab_row)
+        additional_features = self.get_additional_features(ab_dict)
 
         return ab_tokens, ag_seqs, torch.tensor(binding_scores, dtype=torch.float32), additional_features
 
-    def add_cdr_separators(self, seq, row, chain):
-        cdr1_start = row[f'aaCDR1StartPosition{chain}']
-        cdr1_end = row[f'aaCDR1EndPosition{chain}']
-        cdr2_start = row[f'aaCDR2StartPosition{chain}']
-        cdr2_end = row[f'aaCDR2EndPosition{chain}']
-        cdr3_start = row[f'aaCDR3StartPosition{chain}']
-        cdr3_end = row[f'aaCDR3EndPosition{chain}']
+    def add_cdr_separators(self, seq, row_dict, chain):
+        cdr1_start = row_dict[f'aaCDR1StartPosition{chain}']
+        cdr1_end = row_dict[f'aaCDR1EndPosition{chain}']
+        cdr2_start = row_dict[f'aaCDR2StartPosition{chain}']
+        cdr2_end = row_dict[f'aaCDR2EndPosition{chain}']
+        cdr3_start = row_dict[f'aaCDR3StartPosition{chain}']
+        cdr3_end = row_dict[f'aaCDR3EndPosition{chain}']
 
         seq = (seq[:cdr1_start] + "<CDR1>" + seq[cdr1_start:cdr1_end] + "</CDR1>" +
                seq[cdr1_end:cdr2_start] + "<CDR2>" + seq[cdr2_start:cdr2_end] + "</CDR2>" +
@@ -78,13 +71,12 @@ class AntibodyAntigenDataset(Dataset):
                seq[cdr3_end:])
         return seq
 
-    def get_additional_features(self, row):
+    def get_additional_features(self, row_dict):
         features = []
         for chain in ['_h', '_l']:
-            mut_pos = [int(pos) for pos in row[f'aaMutPos{chain}'].split(',') if pos]
-            features.extend([1 if i in mut_pos else 0 for i in range(len(row[f'aaVDJRegion{chain}']))])
+            mut_pos = [int(pos) for pos in row_dict[f'aaMutPos{chain}'].split(',') if pos]
+            features.extend([1 if i in mut_pos else 0 for i in range(len(row_dict[f'aaVDJRegion{chain}']))])
         return torch.tensor(features, dtype=torch.float32)
-
 
 class ContrastiveModel(nn.Module):
     def __init__(self, esm_model, feature_dim, output_dim):
