@@ -4,7 +4,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import Dataset, DataLoader, random_split
-from transformers import AutoTokenizer, AutoModel, PreTrainedTokenizerFast
+from transformers import AutoTokenizer, AutoModel
 import numpy as np
 
 
@@ -26,8 +26,8 @@ class AntibodyAntigenDataset(Dataset):
         return len(self.antibody_df)
 
     def __getitem__(self, idx):
-        ab_row = self.antibody_df.row(idx)
-        ab_dict = dict(zip(self.column_names, ab_row))
+        # Convert Polars DataFrame row to a dictionary
+        ab_dict = self.antibody_df.row(idx, named=True)
 
         # Prepare antibody sequence
         heavy_seq = ab_dict['aaVDJRegion_h']
@@ -47,7 +47,8 @@ class AntibodyAntigenDataset(Dataset):
         ag_seqs = []
         binding_scores = []
         for ag in self.antigen_list:
-            ag_seq = self.antigen_df.filter(pl.col('HA') == ag).select('seq').item()
+            # Correctly extracting the antigen sequence
+            ag_seq = self.antigen_df.filter(pl.col('HA') == ag).select('seq').to_series()[0]
             ag_tokens = self.tokenizer(ag_seq, return_tensors="pt", padding=True, truncation=True)
             ag_seqs.append(ag_tokens)
             binding_scores.append(ab_dict[ag] if ag in ab_dict else 0)
@@ -77,6 +78,7 @@ class AntibodyAntigenDataset(Dataset):
             mut_pos = [int(pos) for pos in row_dict[f'aaMutPos{chain}'].split(',') if pos]
             features.extend([1 if i in mut_pos else 0 for i in range(len(row_dict[f'aaVDJRegion{chain}']))])
         return torch.tensor(features, dtype=torch.float32)
+
 
 class ContrastiveModel(nn.Module):
     def __init__(self, esm_model, feature_dim, output_dim):
