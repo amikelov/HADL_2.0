@@ -5,7 +5,7 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import Dataset, DataLoader, random_split
 from transformers import AutoTokenizer, AutoModel
-import numpy as np
+#import numpy as np
 
 
 class AntibodyAntigenDataset(Dataset):
